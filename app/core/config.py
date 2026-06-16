@@ -13,9 +13,11 @@ class Settings(BaseSettings):
     DJANGO_API_URL:        str = 'http://localhost:8000'
     ANALYTICS_SERVICE_URL: str = 'http://localhost:8001'
 
-    # LLM provider (agentic tool-calling loop)
-    OPENAI_API_KEY: str = ''
-    OPENAI_MODEL:   str = 'gpt-4o-mini'
+    # LLM provider (agentic tool-calling loop) — OpenAI-compatible API.
+    # Defaults target OpenRouter with DeepSeek V3.2.
+    LLM_API_KEY:  str = ''
+    LLM_BASE_URL: str = 'https://openrouter.ai/api/v1'
+    LLM_MODEL:    str = 'deepseek/deepseek-v3.2'
 
     # Safety bound on tool-calling iterations per chat turn
     AGENT_MAX_ITERATIONS: int = 6
