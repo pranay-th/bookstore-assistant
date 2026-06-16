@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.services.agent_service import AgentError
-from app.tests.helpers import FakeLLM, text_completion
+from app.tests.helpers import FakeLLM, auth_header, text_completion
 
 client = TestClient(app)
 
@@ -22,7 +22,11 @@ def test_chat_returns_reply():
         from app.services.agent_service import AgentService
         MockService.return_value = AgentService(llm_client=fake)
 
-        resp = client.post("/chat", json={"message": "Recommend a sci-fi book"})
+        resp = client.post(
+            "/chat",
+            json={"message": "Recommend a sci-fi book"},
+            headers=auth_header(),
+        )
 
     assert resp.status_code == 200
     body = resp.json()
@@ -36,7 +40,11 @@ def test_chat_carries_session_id():
         from app.services.agent_service import AgentService
         MockService.return_value = AgentService(llm_client=fake)
 
-        resp = client.post("/chat", json={"message": "hi", "session_id": "sess-123"})
+        resp = client.post(
+            "/chat",
+            json={"message": "hi", "session_id": "sess-123"},
+            headers=auth_header(),
+        )
 
     assert resp.status_code == 200
     assert resp.json()["session_id"] == "sess-123"
@@ -48,7 +56,7 @@ def test_chat_missing_api_key_returns_503():
         instance = MockService.return_value
         instance.run.side_effect = AgentError("LLM_API_KEY is not set")
 
-        resp = client.post("/chat", json={"message": "hi"})
+        resp = client.post("/chat", json={"message": "hi"}, headers=auth_header())
 
     assert resp.status_code == 503
     assert "LLM_API_KEY" in resp.json()["detail"]
@@ -65,7 +73,11 @@ def test_recommendations_returns_results():
         from app.services.recommendation_service import RecommendationService
         MockService.return_value = RecommendationService(llm_client=fake)
 
-        resp = client.post("/recommendations", json={"query": "space opera", "limit": 5})
+        resp = client.post(
+            "/recommendations",
+            json={"query": "space opera", "limit": 5},
+            headers=auth_header(),
+        )
 
     assert resp.status_code == 200
     results = resp.json()["results"]

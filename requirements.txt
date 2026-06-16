@@ -15,5 +15,9 @@ python-decouple==3.8
 # LLM SDK (agentic tool-calling loop)
 openai==1.59.6
 
+# JWT verification — validates access tokens issued by the Django backend
+# (djangorestframework-simplejwt, HS256, shared SECRET_KEY)
+pyjwt==2.10.1
+
 # TODO: Add sentry-sdk for error tracking
 # TODO: Add redis for conversation/session state if needed
