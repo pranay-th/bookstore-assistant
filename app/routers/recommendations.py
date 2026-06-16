@@ -1,22 +1,25 @@
 """
 routers/recommendations.py — AI book recommendation endpoints.
-All endpoints return 501 Not Implemented until Phase 1.
 """
-from fastapi import APIRouter
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, HTTPException
 
-from app.schemas.recommendations import RecommendationRequest
+from app.schemas.recommendations import RecommendationRequest, RecommendationResponse
+from app.services.agent_service import AgentError
+from app.services.recommendation_service import RecommendationService
 
 router = APIRouter()
 
 
-@router.post("", summary="Get AI book recommendations")
-def recommend(request: RecommendationRequest):
+@router.post("", response_model=RecommendationResponse, summary="Get AI book recommendations")
+def recommend(request: RecommendationRequest) -> RecommendationResponse:
     """
     POST /recommendations
-    TODO: Return personalized / query-driven book recommendations.
+
+    Uses the agentic tool-calling loop to gather candidate books from the
+    catalog, then ranks and explains the best picks.
     """
-    return JSONResponse(
-        status_code=501,
-        content={"detail": "Not implemented — Phase 1"},
-    )
+    service = RecommendationService()
+    try:
+        return service.recommend(request)
+    except AgentError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc

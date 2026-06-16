@@ -124,11 +124,27 @@ Railway deployments. Health probe endpoint: `GET /health` → `{"status": "ok"}`
 | Method | Path               | Status          |
 |--------|--------------------|-----------------|
 | GET    | `/health`          | ✅ Implemented  |
-| POST   | `/chat`            | 501 Placeholder |
-| POST   | `/recommendations` | 501 Placeholder |
+| POST   | `/chat`            | ✅ Implemented  |
+| POST   | `/recommendations` | ✅ Implemented  |
 
-## Phase 0 Status
+## Phase 1 Status
 
-Foundation skeleton only. Health endpoint is functional; chat and
-recommendation endpoints return `501 Not Implemented`. The agentic loop and
-tool implementations land in Phase 1.
+The agentic loop is live. `/chat` and `/recommendations` run the LLM
+tool-calling loop against the Django catalog:
+
+- **Tools** (`services/tools.py`): `search_books`, `get_book`,
+  `list_books_by_author` — each calls the Django backend and unwraps its
+  `{"status": ..., "data": ...}` response envelope.
+- **Agent loop** (`services/agent_service.py`): builds `system + history +
+  user` messages, advertises the tools, and dispatches tool calls until the
+  model returns a final reply or `AGENT_MAX_ITERATIONS` is hit (after which it
+  makes one tool-free call to force a final answer).
+- **Recommendations** (`services/recommendation_service.py`): reuses the loop
+  and asks the model for a strict JSON object that is parsed into
+  `RecommendationResponse`.
+- **Error handling**: a missing `LLM_API_KEY`, backend/HTTP failures, unknown
+  tools, and bad tool arguments are all handled gracefully — the endpoints
+  return `503` on agent failure rather than crashing.
+
+Tests mock both the LLM client and the backend, so `pytest` runs with no
+network access.
