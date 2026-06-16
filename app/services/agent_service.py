@@ -14,39 +14,184 @@ Loop shape (Phase 1):
        is reached.
 """
 import json
+import logging
+
+import httpx
 
 from app.core.config import settings
+from app.core.llm import get_llm_client
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.services import tools
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
     "You are the Enterprise Book Store assistant. Help shoppers find books, "
     "answer questions about the catalog, and make recommendations. Use the "
-    "provided tools to look up real catalog data instead of guessing."
+    "provided tools to look up real catalog data instead of guessing. When you "
+    "reference a book, prefer details returned by the tools (title, author, "
+    "price). If a search returns nothing, say so honestly rather than inventing "
+    "titles. Keep replies concise and friendly."
 )
 
 
+class AgentError(Exception):
+    """Raised when the agent loop cannot complete (config/backend failure)."""
+
+
 class AgentService:
+    """Runs the LLM tool-calling loop for one chat turn."""
+
     def __init__(self, llm_client=None):
-        self.llm = llm_client
+        # Allow injection (tests pass a mock); fall back to the shared client.
+        self._llm = llm_client
 
+    @property
+    def llm(self):
+        """Lazily resolve the LLM client so the service can be constructed
+        without a configured API key (e.g. at import time)."""
+        if self._llm is None:
+            self._llm = get_llm_client()
+        return self._llm
+
+    # ------------------------------------------------------------------
+    # Public entrypoint
+    # ------------------------------------------------------------------
     def run(self, request: ChatRequest) -> ChatResponse:
-        """
-        Execute the tool-calling loop for one chat turn.
+        """Execute the tool-calling loop and return the assistant reply."""
+        messages = self._build_messages(SYSTEM_PROMPT, request.history, request.message)
+        reply_text = self._run_loop(messages)
+        return ChatResponse(reply=reply_text, session_id=request.session_id)
 
-        TODO (Phase 1):
-          - Build the messages list: system + request.history + user message.
-          - Call self.llm.chat.completions.create(..., tools=tools.TOOL_SPECS).
-          - While the response has tool_calls and iterations < AGENT_MAX_ITERATIONS:
-              dispatch each call to tools.TOOL_IMPLS, append tool results, re-call.
-          - Return the final assistant message as ChatResponse.
-        """
-        raise NotImplementedError("Phase 1 — agent loop not implemented")
+    # ------------------------------------------------------------------
+    # Core loop (shared with recommendation service)
+    # ------------------------------------------------------------------
+    def _run_loop(self, messages: list[dict]) -> str:
+        """Drive the LLM <-> tool conversation until a final answer or the
+        iteration cap is hit. Returns the final assistant text."""
+        try:
+            llm = self.llm
+        except RuntimeError as exc:
+            # Missing API key, etc. — surface as a clean error, not a crash.
+            raise AgentError(str(exc)) from exc
+
+        for iteration in range(settings.AGENT_MAX_ITERATIONS):
+            try:
+                response = llm.chat.completions.create(
+                    model=settings.LLM_MODEL,
+                    messages=messages,
+                    tools=tools.TOOL_SPECS,
+                )
+            except Exception as exc:  # noqa: BLE001 — normalize SDK/network errors
+                logger.exception("LLM request failed")
+                raise AgentError(f"LLM request failed: {exc}") from exc
+
+            message = response.choices[0].message
+            tool_calls = getattr(message, "tool_calls", None)
+
+            # No tool calls -> the model produced its final answer.
+            if not tool_calls:
+                return (message.content or "").strip()
+
+            # Record the assistant's tool-call turn, then run each tool.
+            messages.append(self._assistant_tool_message(message, tool_calls))
+            for call in tool_calls:
+                result = self._dispatch_tool(call.function.name, call.function.arguments)
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "content": result,
+                    }
+                )
+
+        # Exhausted the iteration budget — ask for a final answer without tools
+        # so the user still gets a usable reply instead of an error.
+        return self._force_final_answer(llm, messages)
+
+    def _force_final_answer(self, llm, messages: list[dict]) -> str:
+        """Make one last call with no tools to squeeze out a final reply after
+        the iteration cap is reached."""
+        messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "You have reached the tool-call limit. Provide the best final "
+                    "answer you can using the information gathered so far."
+                ),
+            }
+        )
+        try:
+            response = llm.chat.completions.create(
+                model=settings.LLM_MODEL,
+                messages=messages,
+            )
+            text = (response.choices[0].message.content or "").strip()
+            if text:
+                return text
+        except Exception:  # noqa: BLE001
+            logger.exception("Final-answer LLM request failed after max iterations")
+
+        return (
+            "I wasn't able to finish looking that up just now. Could you try "
+            "rephrasing or narrowing your request?"
+        )
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _build_messages(system_prompt: str, history, user_message: str) -> list[dict]:
+        """Assemble the OpenAI-style messages list: system + history + user."""
+        messages: list[dict] = [{"role": "system", "content": system_prompt}]
+        for turn in history or []:
+            messages.append({"role": turn.role, "content": turn.content})
+        messages.append({"role": "user", "content": user_message})
+        return messages
+
+    @staticmethod
+    def _assistant_tool_message(message, tool_calls) -> dict:
+        """Serialize the assistant message that requested tool calls so it can
+        be appended back into the conversation."""
+        return {
+            "role": "assistant",
+            "content": message.content or "",
+            "tool_calls": [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {
+                        "name": call.function.name,
+                        "arguments": call.function.arguments,
+                    },
+                }
+                for call in tool_calls
+            ],
+        }
 
     def _dispatch_tool(self, name: str, arguments: str) -> str:
-        """Execute a single tool call and return a JSON-serialized result."""
+        """Execute a single tool call and return a JSON-serialized result.
+
+        Errors are returned as JSON (not raised) so the model can read them and
+        recover (e.g. retry with a different query) within the loop.
+        """
         impl = tools.TOOL_IMPLS.get(name)
         if impl is None:
             return json.dumps({"error": f"unknown tool: {name}"})
-        kwargs = json.loads(arguments or "{}")
-        return json.dumps(impl(**kwargs))
+
+        try:
+            kwargs = json.loads(arguments or "{}")
+        except json.JSONDecodeError as exc:
+            return json.dumps({"error": f"invalid tool arguments: {exc}"})
+
+        try:
+            return json.dumps(impl(**kwargs))
+        except httpx.HTTPError as exc:
+            logger.warning("Tool %s backend call failed: %s", name, exc)
+            return json.dumps({"error": f"backend request failed: {exc}"})
+        except TypeError as exc:
+            # Wrong/missing arguments for the tool callable.
+            return json.dumps({"error": f"bad arguments for {name}: {exc}"})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Tool %s raised", name)
+            return json.dumps({"error": f"tool {name} failed: {exc}"})
