@@ -17,7 +17,7 @@ easy to extend with new tools (orders, inventory, trending).
 
 - **FastAPI** — ASGI web framework
 - **Pydantic v2** — data validation
-- **OpenAI SDK** — LLM + function/tool calling
+- **OpenAI SDK** — OpenAI-compatible client (pointed at OpenRouter) for LLM + tool calling
 - **httpx** — calls into the Django backend and analytics service
 - **Railway** — hosting platform
 
@@ -33,7 +33,7 @@ pip install -r requirements.txt
 
 # 3. Copy and configure environment file
 cp .env.example .env
-# Fill in OPENAI_API_KEY, DJANGO_API_URL
+# Fill in LLM_API_KEY (OpenRouter), DJANGO_API_URL
 
 # 4. Start the development server (http://localhost:8002)
 uvicorn app.main:app --reload --port 8002
@@ -48,8 +48,9 @@ uvicorn app.main:app --reload --port 8002
 
 | Variable                | Description                                       |
 |-------------------------|---------------------------------------------------|
-| `OPENAI_API_KEY`        | API key for the LLM provider                      |
-| `OPENAI_MODEL`          | Chat model used for the agent loop                |
+| `LLM_API_KEY`           | OpenRouter API key                                |
+| `LLM_BASE_URL`          | OpenAI-compatible base URL (OpenRouter)           |
+| `LLM_MODEL`             | Model slug used for the agent loop                |
 | `AGENT_MAX_ITERATIONS`  | Safety bound on tool-call iterations per turn     |
 | `DJANGO_API_URL`        | Base URL of the Django backend (tool calls)       |
 | `ANALYTICS_SERVICE_URL` | Base URL of the analytics microservice            |
@@ -106,7 +107,7 @@ web service:
 Steps:
 1. In Render, create a new Blueprint and point it at this repo — it reads
    `render.yaml` automatically.
-2. Set the secret env vars marked `sync: false` (`OPENAI_API_KEY`,
+2. Set the secret env vars marked `sync: false` (`LLM_API_KEY`,
    `DJANGO_API_URL`, `ANALYTICS_SERVICE_URL`, `CORS_ORIGINS`) in the Render
    dashboard.
 3. Push to `main` to deploy. The `.github/workflows/deploy.yml` workflow will

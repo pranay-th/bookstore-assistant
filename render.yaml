@@ -9,10 +9,12 @@ services:
         value: production
       - key: APP_DEBUG
         value: "False"
-      - key: OPENAI_API_KEY
+      - key: LLM_API_KEY
         sync: false
-      - key: OPENAI_MODEL
-        value: gpt-4o-mini
+      - key: LLM_BASE_URL
+        value: https://openrouter.ai/api/v1
+      - key: LLM_MODEL
+        value: deepseek/deepseek-v3.2
       - key: AGENT_MAX_ITERATIONS
         value: "6"
       - key: DJANGO_API_URL
