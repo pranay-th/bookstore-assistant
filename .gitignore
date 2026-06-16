@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Environment files — NEVER commit real env files
+.env
+.env.local
+.env.*.local
+
+# Vector store / model artifacts
+*.bin
+*.faiss
+*.index
+data/embeddings/
+
+# Database
+*.db
+*.sqlite3
+
+# Coverage
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+
+# Distribution
+*.egg-info/
+dist/
+build/
+
+# Logs
+*.log
+
+# Editor
+.vscode/
+.idea/
+*.sw?
+
+# OS
+.DS_Store
+Thumbs.db
