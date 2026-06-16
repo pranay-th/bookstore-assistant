@@ -22,6 +22,23 @@ class Settings(BaseSettings):
     # Safety bound on tool-calling iterations per chat turn
     AGENT_MAX_ITERATIONS: int = 6
 
+    # ------------------------------------------------------------------
+    # Auth — validates JWT access tokens issued by the Django backend.
+    #
+    # The backend uses djangorestframework-simplejwt (HS256) signing with
+    # Django's SECRET_KEY. To verify those tokens here statelessly, JWT_SECRET
+    # MUST match the backend's SECRET_KEY, and the algorithm / claim names must
+    # match the backend's SIMPLE_JWT config.
+    # ------------------------------------------------------------------
+    JWT_SECRET:       str = ''           # == Django SECRET_KEY
+    JWT_ALGORITHM:    str = 'HS256'
+    JWT_USER_ID_CLAIM: str = 'user_id'   # == SIMPLE_JWT['USER_ID_CLAIM']
+
+    # When True, /chat and /recommendations require a valid Bearer token.
+    # When False, auth is optional (token is decoded if present, ignored if not)
+    # — handy for local development.
+    REQUIRE_AUTH: bool = True
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(',')]

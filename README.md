@@ -56,6 +56,33 @@ uvicorn app.main:app --reload --port 8002
 | `ANALYTICS_SERVICE_URL` | Base URL of the analytics microservice            |
 | `CORS_ORIGINS`          | Comma-separated allowed CORS origins              |
 | `APP_DEBUG`             | `True` for development, `False` for prod          |
+| `JWT_SECRET`            | **Must equal the Django backend's `SECRET_KEY`**  |
+| `JWT_ALGORITHM`         | JWT signing algorithm (default `HS256`)           |
+| `JWT_USER_ID_CLAIM`     | Claim holding the user id (default `user_id`)     |
+| `REQUIRE_AUTH`          | Require a Bearer token on AI endpoints (default `True`) |
+
+## Authentication
+
+`/chat` and `/recommendations` require a Bearer access token issued by the
+Django backend's login flow (`POST /user/verify-otp/`):
+
+```
+Authorization: Bearer <access-token>
+```
+
+Tokens are **verified statelessly** — the backend signs them with
+`djangorestframework-simplejwt` (HS256, Django `SECRET_KEY`), and this service
+verifies the signature locally using the same secret. No extra network call to
+the backend is made per request.
+
+For this to work, set `JWT_SECRET` here to the **same value** as the backend's
+`SECRET_KEY`. The service rejects expired tokens, bad signatures, refresh
+tokens used as access tokens, and tokens missing the `user_id` claim — all with
+`401 Unauthorized`. The authenticated `user_id` overrides any client-supplied
+`user_id` in the request body.
+
+Set `REQUIRE_AUTH=False` for local development to make the token optional
+(a present-but-invalid token is still rejected). `/health` is always open.
 
 ## Architecture
 
@@ -123,9 +150,9 @@ Railway deployments. Health probe endpoint: `GET /health` → `{"status": "ok"}`
 
 | Method | Path               | Status          |
 |--------|--------------------|-----------------|
-| GET    | `/health`          | ✅ Implemented  |
-| POST   | `/chat`            | ✅ Implemented  |
-| POST   | `/recommendations` | ✅ Implemented  |
+| GET    | `/health`          | ✅ Implemented (no auth) |
+| POST   | `/chat`            | ✅ Implemented (Bearer token) |
+| POST   | `/recommendations` | ✅ Implemented (Bearer token) |
 
 ## Phase 1 Status
 
