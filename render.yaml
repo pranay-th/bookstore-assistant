@@ -23,4 +23,14 @@ services:
         sync: false
       - key: CORS_ORIGINS
         sync: false
+      # Auth — JWT_SECRET MUST equal the Django backend's SECRET_KEY so this
+      # service can verify the access tokens it issues.
+      - key: JWT_SECRET
+        sync: false
+      - key: JWT_ALGORITHM
+        value: HS256
+      - key: JWT_USER_ID_CLAIM
+        value: user_id
+      - key: REQUIRE_AUTH
+        value: "True"
     healthCheckPath: /health
