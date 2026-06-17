@@ -30,7 +30,9 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 # auto_error=False so we can craft our own 401s and support optional auth.
-_bearer = HTTPBearer(auto_error=False)
+# scheme_name="jwtAuth" mirrors the Django backend's Swagger (drf-spectacular
+# names the simplejwt scheme "jwtAuth"), so both API docs look identical.
+_bearer = HTTPBearer(scheme_name="jwtAuth", auto_error=False)
 
 
 @dataclass
