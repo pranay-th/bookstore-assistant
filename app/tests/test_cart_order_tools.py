@@ -79,6 +79,7 @@ def _patch_auth_client(resp):
 
 
 def test_add_to_cart_forwards_token_and_slims():
+    book_id = "1c6343bd-032c-48a2-9dff-53541ef0167f"
     body = {
         "status": {"success": True},
         "data": {
@@ -87,7 +88,7 @@ def test_add_to_cart_forwards_token_and_slims():
             "total_price": "499.00",
             "items": [
                 {
-                    "id": "item1", "book_id": "b1", "title": "Dune",
+                    "id": "item1", "book_id": book_id, "title": "Dune",
                     "author": "Frank Herbert", "quantity": 1, "price": "499.00",
                     "subtotal": "499.00", "cover_url": "x", "created_at": "y",
                 }
@@ -96,11 +97,11 @@ def test_add_to_cart_forwards_token_and_slims():
     }
     patcher, fake_client = _patch_auth_client(_mock_response(body))
     with patcher as mock_auth_client:
-        cart = backend_client.add_to_cart("tok-123", book_id="b1", quantity=1)
+        cart = backend_client.add_to_cart("tok-123", book_id=book_id, quantity=1)
         mock_auth_client.assert_called_once_with("tok-123")
 
     fake_client.post.assert_called_once_with(
-        "/api/cart/add/", json={"book_id": "b1", "quantity": 1}
+        "/api/cart/add/", json={"book_id": book_id, "quantity": 1}
     )
     # Slimmed: heavy fields dropped from line items.
     item = cart["items"][0]
@@ -152,3 +153,11 @@ def test_place_order_empty_cart_returns_error():
     with patcher:
         result = backend_client.place_order("tok-123")
     assert "empty" in result["error"].lower()
+
+
+def test_add_to_cart_rejects_non_uuid_book_id():
+    """A title or malformed id returns a clear error without hitting the API."""
+    # No _auth_client patch needed — it should bail before any HTTP call.
+    result = backend_client.add_to_cart("tok-123", book_id="The Hobbit", quantity=1)
+    assert "error" in result
+    assert "search_books" in result["error"]

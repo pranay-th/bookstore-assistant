@@ -17,6 +17,8 @@ The helpers below unwrap that envelope so tools receive plain Python data.
 
 TODO: Add auth header forwarding, retries, and timeout tuning.
 """
+import uuid
+
 import httpx
 
 from app.core.config import settings
@@ -151,6 +153,18 @@ def get_cart(access_token: str) -> dict:
 
 def add_to_cart(access_token: str, book_id: str, quantity: int = 1) -> dict:
     """Add a book to the cart (or increment if already present)."""
+    book_id = str(book_id or "").strip()
+    # The backend expects a UUID book id. If the model passed a title or a
+    # malformed id, fail with a clear, recoverable message instead of a raw 400.
+    try:
+        uuid.UUID(book_id)
+    except (ValueError, AttributeError, TypeError):
+        return {
+            "error": (
+                "add_to_cart needs the book's id (a UUID), not its title. "
+                "Use search_books to find the id first."
+            )
+        }
     quantity = max(1, int(quantity or 1))
     with _auth_client(access_token) as client:
         resp = client.post("/api/cart/add/", json={"book_id": book_id, "quantity": quantity})

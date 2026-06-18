@@ -71,6 +71,36 @@ def _normalize_llm_error(exc: Exception) -> str:
     return f"LLM request failed: {exc}"
 
 
+def _backend_error_detail(exc: "httpx.HTTPStatusError") -> str | None:
+    """Pull a human message out of the Django backend's error response.
+
+    The backend wraps errors as {"status": {"message": "..."}, "data": null};
+    DRF validation errors may instead be {"field": ["msg", ...]} or
+    {"detail": "..."}. Returns a short string, or None if nothing usable.
+    """
+    resp = getattr(exc, "response", None)
+    if resp is None:
+        return None
+    try:
+        body = resp.json()
+    except Exception:  # noqa: BLE001 — non-JSON body
+        return None
+
+    if isinstance(body, dict):
+        status = body.get("status")
+        if isinstance(status, dict) and status.get("message"):
+            return str(status["message"])
+        if body.get("detail"):
+            return str(body["detail"])
+        # DRF field errors: take the first one.
+        for value in body.values():
+            if isinstance(value, list) and value:
+                return str(value[0])
+            if isinstance(value, str) and value:
+                return value
+    return None
+
+
 def _status_for_tools(names: str) -> str:
     """Map tool names to a friendly progress message for streaming clients."""
     if "place_order" in names:
@@ -452,12 +482,17 @@ class AgentService:
             return json.dumps(impl(*args, **kwargs))
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code if exc.response is not None else None
+            detail = _backend_error_detail(exc)
             if status_code == 401:
                 return json.dumps({"error": "Your session has expired — please sign in again."})
             if status_code == 404:
-                return json.dumps({"error": "That item could not be found."})
-            logger.warning("Tool %s backend call failed: %s", name, exc)
-            return json.dumps({"error": f"backend request failed ({status_code})"})
+                return json.dumps({"error": detail or "That item could not be found."})
+            # 400 and others: surface the backend's real message so the model can
+            # explain it (e.g. "This book is out of stock.") and recover.
+            logger.warning("Tool %s backend %s: %s", name, status_code, detail or exc)
+            return json.dumps(
+                {"error": detail or f"backend request failed ({status_code})"}
+            )
         except httpx.HTTPError as exc:
             logger.warning("Tool %s backend call failed: %s", name, exc)
             return json.dumps({"error": f"backend request failed: {exc}"})
