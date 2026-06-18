@@ -27,15 +27,27 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
     "You are the Enterprise Book Store assistant. Help shoppers find books, "
-    "answer questions about the catalog, and make recommendations. Use the "
-    "provided tools to look up real catalog data instead of guessing. When you "
-    "reference a book, prefer details returned by the tools (title, author, "
-    "price). If a search returns nothing, say so honestly rather than inventing "
-    "titles. Keep replies concise and friendly.\n\n"
-    "Be economical with tools: usually a single search_books call answers the "
-    "question. Do not call tools repeatedly with similar queries, and do not "
+    "answer questions about the catalog, manage their cart, and place orders. "
+    "Use the provided tools to look up real catalog data and act on the "
+    "shopper's account instead of guessing. When you reference a book, prefer "
+    "details returned by the tools (title, author, price). If a search returns "
+    "nothing, say so honestly rather than inventing titles. Keep replies "
+    "concise and friendly.\n\n"
+    "Be economical with tools: usually a single search_books call answers a "
+    "question. Don't call tools repeatedly with similar queries, and don't "
     "fetch per-book details unless the shopper asks about one specific book. "
-    "Once you have enough information, answer directly."
+    "Once you have enough information, answer directly.\n\n"
+    "Cart & orders:\n"
+    "- To add a book you need its id; use search_books first if you only have a "
+    "title, and confirm you have the right book.\n"
+    "- To remove an item, call view_cart to get the cart-item id, then "
+    "remove_from_cart with that id.\n"
+    "- Before placing an order, confirm the shopper wants to check out and ask "
+    "which payment method they'd like (card, paypal, or bank_transfer). Only "
+    "then call place_order. Payment is simulated — no real charge — so tell the "
+    "shopper that. After ordering, share the order id, total, and status.\n"
+    "- Never invent cart contents, prices, order ids, or totals: always read "
+    "them from the tools."
 )
 
 
@@ -61,6 +73,16 @@ def _normalize_llm_error(exc: Exception) -> str:
 
 def _status_for_tools(names: str) -> str:
     """Map tool names to a friendly progress message for streaming clients."""
+    if "place_order" in names:
+        return "Placing your order…"
+    if "add_to_cart" in names:
+        return "Adding to your cart…"
+    if "remove_from_cart" in names or "clear_cart" in names:
+        return "Updating your cart…"
+    if "view_cart" in names:
+        return "Checking your cart…"
+    if "list_orders" in names:
+        return "Looking up your orders…"
     if "search_books" in names or "list_books_by_author" in names:
         return "Searching the catalog…"
     if "get_book" in names:
@@ -71,9 +93,11 @@ def _status_for_tools(names: str) -> str:
 class AgentService:
     """Runs the LLM tool-calling loop for one chat turn."""
 
-    def __init__(self, llm_client=None):
+    def __init__(self, llm_client=None, access_token=None):
         # Allow injection (tests pass a mock); fall back to the shared client.
         self._llm = llm_client
+        # The shopper's JWT, forwarded to user-scoped tools (cart, orders).
+        self._access_token = access_token
 
     @property
     def llm(self):
@@ -401,6 +425,10 @@ class AgentService:
 
         Errors are returned as JSON (not raised) so the model can read them and
         recover (e.g. retry with a different query) within the loop.
+
+        User-scoped tools (cart, orders) receive the shopper's access_token,
+        injected here — never supplied by the model. If there's no token
+        (anonymous request), those tools return a clear error instead of acting.
         """
         impl = tools.TOOL_IMPLS.get(name)
         if impl is None:
@@ -411,8 +439,25 @@ class AgentService:
         except json.JSONDecodeError as exc:
             return json.dumps({"error": f"invalid tool arguments: {exc}"})
 
+        if name in tools.USER_SCOPED_TOOLS:
+            if not self._access_token:
+                return json.dumps(
+                    {"error": "Please sign in to manage your cart or place an order."}
+                )
+            args = (self._access_token,)
+        else:
+            args = ()
+
         try:
-            return json.dumps(impl(**kwargs))
+            return json.dumps(impl(*args, **kwargs))
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code if exc.response is not None else None
+            if status_code == 401:
+                return json.dumps({"error": "Your session has expired — please sign in again."})
+            if status_code == 404:
+                return json.dumps({"error": "That item could not be found."})
+            logger.warning("Tool %s backend call failed: %s", name, exc)
+            return json.dumps({"error": f"backend request failed ({status_code})"})
         except httpx.HTTPError as exc:
             logger.warning("Tool %s backend call failed: %s", name, exc)
             return json.dumps({"error": f"backend request failed: {exc}"})

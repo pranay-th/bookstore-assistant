@@ -26,6 +26,13 @@ def _client() -> httpx.Client:
     return httpx.Client(base_url=settings.DJANGO_API_URL, timeout=10.0)
 
 
+def _auth_client(access_token: str) -> httpx.Client:
+    """A client that forwards the user's JWT for user-scoped endpoints
+    (cart, orders). Both services share SECRET_KEY, so the token validates."""
+    headers = {"Authorization": f"Bearer {access_token}"} if access_token else {}
+    return httpx.Client(base_url=settings.DJANGO_API_URL, timeout=10.0, headers=headers)
+
+
 def _unwrap(payload: dict) -> dict:
     """Return the ``data`` section of the backend's response envelope.
 
@@ -108,3 +115,111 @@ def list_books_by_author(author: str, limit: int = 5) -> list[dict]:
     needle = author.strip().lower()
     filtered = [b for b in results if needle in (b.get("author") or "").lower()]
     return filtered or results
+
+
+# ---------------------------------------------------------------------------
+# Cart + orders — user-scoped. These require the caller's JWT, forwarded via
+# _auth_client. All endpoints are scoped to the authenticated user server-side.
+# ---------------------------------------------------------------------------
+
+# Cart line items can be large; project to what the model needs to reason/act.
+_CART_ITEM_FIELDS = ("id", "book_id", "title", "author", "quantity", "price", "subtotal")
+
+
+def _slim_cart(data: dict) -> dict:
+    """Trim a cart payload to id, totals, and lean line items."""
+    if not isinstance(data, dict):
+        return {"items": [], "total_quantity": 0, "total_price": "0"}
+    items = []
+    for it in data.get("items", []) or []:
+        if isinstance(it, dict):
+            items.append({k: it[k] for k in _CART_ITEM_FIELDS if k in it})
+    return {
+        "items": items,
+        "total_quantity": data.get("total_quantity", len(items)),
+        "total_price": data.get("total_price", "0"),
+    }
+
+
+def get_cart(access_token: str) -> dict:
+    """Return the authenticated user's cart (lean)."""
+    with _auth_client(access_token) as client:
+        resp = client.get("/api/cart/")
+        resp.raise_for_status()
+        return _slim_cart(_unwrap(resp.json()))
+
+
+def add_to_cart(access_token: str, book_id: str, quantity: int = 1) -> dict:
+    """Add a book to the cart (or increment if already present)."""
+    quantity = max(1, int(quantity or 1))
+    with _auth_client(access_token) as client:
+        resp = client.post("/api/cart/add/", json={"book_id": book_id, "quantity": quantity})
+        resp.raise_for_status()
+        return _slim_cart(_unwrap(resp.json()))
+
+
+def remove_cart_item(access_token: str, item_id: str) -> dict:
+    """Remove a single line item from the cart by its cart-item id.
+
+    Note: this is the cart *item* id (from get_cart's items[].id), not a book id.
+    """
+    with _auth_client(access_token) as client:
+        resp = client.delete(f"/api/cart/{item_id}/remove/")
+        resp.raise_for_status()
+        return _slim_cart(_unwrap(resp.json()))
+
+
+def clear_cart(access_token: str) -> dict:
+    """Empty the authenticated user's cart."""
+    with _auth_client(access_token) as client:
+        resp = client.delete("/api/cart/clear/")
+        resp.raise_for_status()
+        return _slim_cart(_unwrap(resp.json()))
+
+
+def place_order(access_token: str, payment_method: str = "card") -> dict:
+    """Check out the user's current cart into a confirmed order.
+
+    Reads the cart server-side, sends its items to the checkout endpoint
+    (which simulates payment, creates the order, deducts stock, and clears the
+    cart). Returns the order summary.
+    """
+    cart = get_cart(access_token)
+    items = [
+        {"book_id": it["book_id"], "quantity": it["quantity"]}
+        for it in cart.get("items", [])
+        if it.get("book_id")
+    ]
+    if not items:
+        return {"error": "Your cart is empty — add a book before placing an order."}
+
+    method = payment_method if payment_method in ("card", "paypal", "bank_transfer") else "card"
+    with _auth_client(access_token) as client:
+        resp = client.post(
+            "/api/orders/checkout/",
+            json={"items": items, "payment_method": method},
+        )
+        resp.raise_for_status()
+        return _unwrap(resp.json())
+
+
+def list_orders(access_token: str, limit: int = 5) -> list[dict]:
+    """List the authenticated user's recent orders (lean)."""
+    with _auth_client(access_token) as client:
+        resp = client.get("/api/orders/")
+        resp.raise_for_status()
+        data = _unwrap(resp.json())
+
+    rows = data if isinstance(data, list) else data.get("results", [])
+    lean = []
+    for o in rows[: max(1, int(limit or 5))]:
+        if not isinstance(o, dict):
+            continue
+        lean.append({
+            "order_id": o.get("id"),
+            "status": o.get("status"),
+            "total_amount": o.get("total_amount"),
+            "item_count": len(o.get("items", []) or []),
+            "created_at": o.get("created_at"),
+        })
+    return lean

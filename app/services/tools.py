@@ -69,6 +69,99 @@ TOOL_SPECS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "view_cart",
+            "description": (
+                "View the shopper's current shopping cart: line items (each with "
+                "a cart-item id, title, quantity, price) and totals."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_to_cart",
+            "description": (
+                "Add a book to the shopper's cart by book id (use search_books "
+                "first to find the id). If it's already in the cart, the quantity "
+                "increases. Confirm the title with the shopper before adding if "
+                "there's any ambiguity."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "book_id": {"type": "string", "description": "The book's unique id"},
+                    "quantity": {"type": "integer", "description": "Copies to add", "default": 1},
+                },
+                "required": ["book_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remove_from_cart",
+            "description": (
+                "Remove a line item from the cart. Pass the cart-item id (the "
+                "'id' field from view_cart's items — NOT the book id). Call "
+                "view_cart first if you don't have it."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "item_id": {"type": "string", "description": "The cart-item id from view_cart"},
+                },
+                "required": ["item_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "clear_cart",
+            "description": "Remove everything from the shopper's cart. Confirm with the shopper first.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "place_order",
+            "description": (
+                "Place an order for everything currently in the shopper's cart "
+                "(simulated payment — no real charge). Before calling this, make "
+                "sure the cart has items (use view_cart) and confirm the shopper "
+                "wants to check out. Ask which payment method they'd like."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "payment_method": {
+                        "type": "string",
+                        "enum": ["card", "paypal", "bank_transfer"],
+                        "description": "Payment method the shopper chose",
+                        "default": "card",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_orders",
+            "description": "List the shopper's recent orders with status and totals.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "Max orders (1-10)", "default": 5},
+                },
+            },
+        },
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -93,8 +186,51 @@ def _list_books_by_author(**kwargs):
     return backend_client.list_books_by_author(**kwargs)
 
 
+# ── User-scoped tools — they receive the shopper's access_token (injected by
+#    the agent loop, never supplied by the model) as the first argument. ──
+def _view_cart(access_token, **kwargs):
+    return backend_client.get_cart(access_token)
+
+
+def _add_to_cart(access_token, **kwargs):
+    return backend_client.add_to_cart(access_token, **kwargs)
+
+
+def _remove_from_cart(access_token, **kwargs):
+    return backend_client.remove_cart_item(access_token, **kwargs)
+
+
+def _clear_cart(access_token, **kwargs):
+    return backend_client.clear_cart(access_token)
+
+
+def _place_order(access_token, **kwargs):
+    return backend_client.place_order(access_token, **kwargs)
+
+
+def _list_orders(access_token, **kwargs):
+    return backend_client.list_orders(access_token, **kwargs)
+
+
 TOOL_IMPLS = {
     "search_books": _search_books,
     "get_book": _get_book,
     "list_books_by_author": _list_books_by_author,
+    "view_cart": _view_cart,
+    "add_to_cart": _add_to_cart,
+    "remove_from_cart": _remove_from_cart,
+    "clear_cart": _clear_cart,
+    "place_order": _place_order,
+    "list_orders": _list_orders,
+}
+
+# Tools that act on the authenticated user's data. The agent loop injects the
+# access_token for these; they are unavailable when the request is anonymous.
+USER_SCOPED_TOOLS = {
+    "view_cart",
+    "add_to_cart",
+    "remove_from_cart",
+    "clear_cart",
+    "place_order",
+    "list_orders",
 }

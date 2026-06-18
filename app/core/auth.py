@@ -42,6 +42,10 @@ class AuthenticatedUser:
     user_id: str
     token_type: Optional[str] = None
     raw_claims: Optional[dict] = None
+    # The raw access token, kept so the agent can forward it to the Django
+    # backend for user-scoped actions (cart, orders). Both services share the
+    # same SECRET_KEY, so this token is valid against Django too.
+    access_token: Optional[str] = None
 
 
 class AuthError(HTTPException):
@@ -96,6 +100,7 @@ def decode_token(token: str) -> AuthenticatedUser:
         user_id=str(user_id),
         token_type=token_type,
         raw_claims=claims,
+        access_token=token,
     )
 
 
