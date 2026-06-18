@@ -18,12 +18,16 @@ TOOL_SPECS = [
         "type": "function",
         "function": {
             "name": "search_books",
-            "description": "Search the bookstore catalog by title, author, or keyword.",
+            "description": (
+                "Search the bookstore catalog by title, author, or keyword. "
+                "Returns a short list of matching books (id, title, author, "
+                "price, stock). Call this at most once or twice per question."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Search keywords"},
-                    "limit": {"type": "integer", "description": "Max results", "default": 10},
+                    "limit": {"type": "integer", "description": "Max results (1-10)", "default": 5},
                 },
                 "required": ["query"],
             },
@@ -33,7 +37,11 @@ TOOL_SPECS = [
         "type": "function",
         "function": {
             "name": "get_book",
-            "description": "Get full details for a single book by its id.",
+            "description": (
+                "Get details for a single book by its id. Only call this when "
+                "the shopper asks about one specific book — search_books already "
+                "returns enough to list and compare titles."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -55,7 +63,7 @@ TOOL_SPECS = [
                 "type": "object",
                 "properties": {
                     "author": {"type": "string", "description": "Author name"},
-                    "limit": {"type": "integer", "description": "Max results", "default": 10},
+                    "limit": {"type": "integer", "description": "Max results (1-10)", "default": 5},
                 },
                 "required": ["author"],
             },
