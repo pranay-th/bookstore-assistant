@@ -29,7 +29,7 @@ def chat(
     if user.user_id and user.user_id != "anonymous":
         request.user_id = user.user_id
 
-    service = AgentService()
+    service = AgentService(access_token=user.access_token)
     try:
         return service.run(request)
     except AgentError as exc:
@@ -67,7 +67,7 @@ def chat_stream(
     if user.user_id and user.user_id != "anonymous":
         request.user_id = user.user_id
 
-    service = AgentService()
+    service = AgentService(access_token=user.access_token)
 
     def event_source():
         try:
