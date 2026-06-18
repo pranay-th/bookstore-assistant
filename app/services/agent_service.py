@@ -31,12 +31,32 @@ SYSTEM_PROMPT = (
     "provided tools to look up real catalog data instead of guessing. When you "
     "reference a book, prefer details returned by the tools (title, author, "
     "price). If a search returns nothing, say so honestly rather than inventing "
-    "titles. Keep replies concise and friendly."
+    "titles. Keep replies concise and friendly.\n\n"
+    "Be economical with tools: usually a single search_books call answers the "
+    "question. Do not call tools repeatedly with similar queries, and do not "
+    "fetch per-book details unless the shopper asks about one specific book. "
+    "Once you have enough information, answer directly."
 )
 
 
 class AgentError(Exception):
     """Raised when the agent loop cannot complete (config/backend failure)."""
+
+
+def _normalize_llm_error(exc: Exception) -> str:
+    """Turn an LLM/provider exception into a user-safe message.
+
+    OpenRouter returns HTTP 402 when the key lacks credit for the requested
+    max_tokens — call that out explicitly so it's actionable rather than a
+    generic failure.
+    """
+    status = getattr(exc, "status_code", None)
+    if status == 402 or "402" in str(exc):
+        return (
+            "The assistant is temporarily unavailable due to an LLM credit "
+            "limit. Please try again later."
+        )
+    return f"LLM request failed: {exc}"
 
 
 def _status_for_tools(names: str) -> str:
@@ -113,10 +133,11 @@ class AgentService:
                     model=settings.LLM_MODEL,
                     messages=messages,
                     tools=tools.TOOL_SPECS,
+                    max_tokens=settings.LLM_MAX_TOKENS,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.exception("LLM request failed during streaming")
-                raise AgentError(f"LLM request failed: {exc}") from exc
+                raise AgentError(_normalize_llm_error(exc)) from exc
 
             message = response.choices[0].message
             tool_calls = getattr(message, "tool_calls", None)
@@ -187,10 +208,11 @@ class AgentService:
                     model=settings.LLM_MODEL,
                     messages=messages,
                     tools=tools.TOOL_SPECS,
+                    max_tokens=settings.LLM_MAX_TOKENS,
                 )
             except Exception as exc:  # noqa: BLE001 — normalize SDK/network errors
                 logger.exception("LLM request failed")
-                raise AgentError(f"LLM request failed: {exc}") from exc
+                raise AgentError(_normalize_llm_error(exc)) from exc
 
             message = response.choices[0].message
             tool_calls = getattr(message, "tool_calls", None)
@@ -231,6 +253,7 @@ class AgentService:
             response = llm.chat.completions.create(
                 model=settings.LLM_MODEL,
                 messages=messages,
+                max_tokens=settings.LLM_MAX_TOKENS,
             )
             text = (response.choices[0].message.content or "").strip()
             if text:

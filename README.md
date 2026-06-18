@@ -51,6 +51,7 @@ uvicorn app.main:app --reload --port 8002
 | `LLM_API_KEY`           | OpenRouter API key                                |
 | `LLM_BASE_URL`          | OpenAI-compatible base URL (OpenRouter)           |
 | `LLM_MODEL`             | Model slug used for the agent loop                |
+| `LLM_MAX_TOKENS`        | Cap on tokens generated per LLM response (default 1024) |
 | `AGENT_MAX_ITERATIONS`  | Safety bound on tool-call iterations per turn     |
 | `DJANGO_API_URL`        | Base URL of the Django backend (tool calls)       |
 | `ANALYTICS_SERVICE_URL` | Base URL of the analytics microservice            |

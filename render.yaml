@@ -15,8 +15,10 @@ services:
         value: https://openrouter.ai/api/v1
       - key: LLM_MODEL
         value: deepseek/deepseek-v3.2
+      - key: LLM_MAX_TOKENS
+        value: "1024"
       - key: AGENT_MAX_ITERATIONS
-        value: "6"
+        value: "4"
       - key: DJANGO_API_URL
         sync: false
       - key: ANALYTICS_SERVICE_URL
