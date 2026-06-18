@@ -19,8 +19,17 @@ class Settings(BaseSettings):
     LLM_BASE_URL: str = 'https://openrouter.ai/api/v1'
     LLM_MODEL:    str = 'deepseek/deepseek-v3.2'
 
-    # Safety bound on tool-calling iterations per chat turn
-    AGENT_MAX_ITERATIONS: int = 6
+    # Cap on tokens generated per LLM response. Without this, some models/
+    # providers (e.g. DeepSeek on OpenRouter) default to a very large
+    # max_tokens (64k+), which OpenRouter rejects with HTTP 402 when the key's
+    # remaining credit can't cover the reservation. Keep modest — chat replies
+    # and recommendation JSON are short.
+    LLM_MAX_TOKENS: int = 1024
+
+    # Safety bound on tool-calling iterations per chat turn. Each iteration is
+    # a full LLM call, so keeping this low directly limits credit spend. 3-4 is
+    # plenty: typically one search round + a final answer.
+    AGENT_MAX_ITERATIONS: int = 4
 
     # ------------------------------------------------------------------
     # Auth — validates JWT access tokens issued by the Django backend.
