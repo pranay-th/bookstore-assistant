@@ -125,70 +125,168 @@ class AgentService:
             yield ("error", f"Something went wrong: {exc}")
 
     def _stream_loop(self, llm, messages: list[dict]):
-        """Tool loop that streams the final answer's tokens."""
+        """Agentic loop with real token streaming.
+
+        Each turn is a streaming completion advertising the tools. As chunks
+        arrive we:
+          - emit any assistant *content* deltas immediately as ('token', …),
+          - accumulate any *tool_call* deltas (which arrive split across chunks).
+
+        Models in this stack don't mix prose with tool calls in one turn: if the
+        model wants tools, the turn carries tool-call deltas and (near-)empty
+        content. So when a turn finishes:
+          - tool calls present  -> execute them, append results, continue;
+          - otherwise           -> the streamed content was the final answer.
+        """
         for iteration in range(settings.AGENT_MAX_ITERATIONS):
-            # Non-streaming call to decide whether tools are needed this round.
             try:
-                response = llm.chat.completions.create(
+                stream = llm.chat.completions.create(
                     model=settings.LLM_MODEL,
                     messages=messages,
                     tools=tools.TOOL_SPECS,
                     max_tokens=settings.LLM_MAX_TOKENS,
+                    stream=True,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.exception("LLM request failed during streaming")
                 raise AgentError(_normalize_llm_error(exc)) from exc
 
-            message = response.choices[0].message
-            tool_calls = getattr(message, "tool_calls", None)
+            content_parts: list[str] = []
+            tool_acc: dict[int, dict] = {}
+            streamed_any = False
 
-            if not tool_calls:
-                # Final answer reached. Stream it token-by-token for a snappy UX.
-                final = (message.content or "").strip()
-                if final:
-                    yield from self._stream_text(final)
+            try:
+                for chunk in stream:
+                    choices = getattr(chunk, "choices", None)
+                    if not choices:
+                        continue
+                    delta = getattr(choices[0], "delta", None)
+                    if delta is None:
+                        continue
+
+                    piece = getattr(delta, "content", None)
+                    if piece:
+                        content_parts.append(piece)
+                        streamed_any = True
+                        yield ("token", piece)
+
+                    for tc in (getattr(delta, "tool_calls", None) or []):
+                        self._accumulate_tool_call(tool_acc, tc)
+            except Exception:  # noqa: BLE001
+                logger.exception("Error reading streamed turn")
+
+            # No tool calls -> the streamed content was the final answer.
+            if not tool_acc:
+                final = "".join(content_parts).strip()
+                if streamed_any and final:
                     yield ("done", final)
                     return
-                # Empty content with no tools — fall through to a streamed call.
-                break
+                # Edge case: empty turn, nudge once more without tools.
+                yield ("status", "Writing your answer…")
+                full = yield from self._stream_completion(llm, messages)
+                yield ("done", full or "I couldn't quite finish that — try rephrasing?")
+                return
 
-            # Announce the tool round, then execute the tools.
-            names = ", ".join(c.function.name for c in tool_calls)
+            # Tool turn — announce, record the assistant turn, run the tools.
+            calls = self._finalize_tool_calls(tool_acc)
+            names = ", ".join(c["function"]["name"] for c in calls)
             yield ("status", _status_for_tools(names))
 
-            messages.append(self._assistant_tool_message(message, tool_calls))
-            for call in tool_calls:
-                result = self._dispatch_tool(call.function.name, call.function.arguments)
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": "".join(content_parts),
+                    "tool_calls": calls,
+                }
+            )
+            for call in calls:
+                result = self._dispatch_tool(
+                    call["function"]["name"], call["function"]["arguments"]
+                )
                 messages.append(
-                    {"role": "tool", "tool_call_id": call.id, "content": result}
+                    {"role": "tool", "tool_call_id": call["id"], "content": result}
                 )
             yield ("status", "Reading the results…")
 
-        # Hit the iteration cap (or empty final) — stream one tool-free answer.
+        # Hit the iteration cap — make a final, tool-free streaming answer.
         yield ("status", "Putting it together…")
-        text = self._force_final_answer(llm, messages)
-        yield from self._stream_text(text)
-        yield ("done", text)
+        messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "You have reached the tool-call limit. Provide the best "
+                    "final answer you can using the information gathered so far."
+                ),
+            }
+        )
+        full = yield from self._stream_completion(llm, messages)
+        yield ("done", full or "I couldn't quite finish that — try rephrasing?")
 
     @staticmethod
-    def _stream_text(text: str):
-        """Yield text in small word-grouped chunks as ('token', chunk).
+    def _accumulate_tool_call(acc: dict, tc) -> None:
+        """Merge a streamed tool_call delta into the accumulator by index.
 
-        The decision call above is not a streaming completion, so we already
-        have the full final text; chunking it here keeps the UI's typing
-        animation smooth without a second model round trip.
+        Tool calls stream as partial deltas: the id/name usually arrive first,
+        then the arguments string builds up across subsequent chunks.
         """
-        words = text.split(" ")
-        chunk = []
-        for i, word in enumerate(words):
-            chunk.append(word)
-            # Emit every few words to balance smoothness vs. event volume.
-            if len(chunk) >= 3 or i == len(words) - 1:
-                piece = " ".join(chunk)
-                if i != len(words) - 1:
-                    piece += " "
-                yield ("token", piece)
-                chunk = []
+        idx = getattr(tc, "index", 0) or 0
+        slot = acc.setdefault(idx, {"id": None, "name": None, "arguments": ""})
+        if getattr(tc, "id", None):
+            slot["id"] = tc.id
+        fn = getattr(tc, "function", None)
+        if fn is not None:
+            if getattr(fn, "name", None):
+                slot["name"] = fn.name
+            if getattr(fn, "arguments", None):
+                slot["arguments"] += fn.arguments
+
+    @staticmethod
+    def _finalize_tool_calls(acc: dict) -> list[dict]:
+        """Turn the accumulator into ordered OpenAI-style tool_call dicts."""
+        calls = []
+        for idx in sorted(acc):
+            slot = acc[idx]
+            calls.append(
+                {
+                    "id": slot["id"] or f"call_{idx}",
+                    "type": "function",
+                    "function": {
+                        "name": slot["name"] or "",
+                        "arguments": slot["arguments"] or "{}",
+                    },
+                }
+            )
+        return calls
+
+    def _stream_completion(self, llm, messages: list[dict]):
+        """Make a streaming (no-tools) completion, yielding ('token', chunk)
+        for each delta. Returns the full concatenated text."""
+        collected = []
+        try:
+            stream = llm.chat.completions.create(
+                model=settings.LLM_MODEL,
+                messages=messages,
+                max_tokens=settings.LLM_MAX_TOKENS,
+                stream=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Streaming completion request failed")
+            raise AgentError(_normalize_llm_error(exc)) from exc
+
+        try:
+            for chunk in stream:
+                choices = getattr(chunk, "choices", None)
+                if not choices:
+                    continue
+                delta = getattr(choices[0], "delta", None)
+                piece = getattr(delta, "content", None) if delta else None
+                if piece:
+                    collected.append(piece)
+                    yield ("token", piece)
+        except Exception:  # noqa: BLE001
+            logger.exception("Error while reading completion stream")
+
+        return "".join(collected).strip()
 
     # ------------------------------------------------------------------
     # Core loop (shared with recommendation service)
