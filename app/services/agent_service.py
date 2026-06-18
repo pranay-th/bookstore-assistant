@@ -39,6 +39,15 @@ class AgentError(Exception):
     """Raised when the agent loop cannot complete (config/backend failure)."""
 
 
+def _status_for_tools(names: str) -> str:
+    """Map tool names to a friendly progress message for streaming clients."""
+    if "search_books" in names or "list_books_by_author" in names:
+        return "Searching the catalog…"
+    if "get_book" in names:
+        return "Looking up book details…"
+    return "Checking the shelves…"
+
+
 class AgentService:
     """Runs the LLM tool-calling loop for one chat turn."""
 
@@ -62,6 +71,103 @@ class AgentService:
         messages = self._build_messages(SYSTEM_PROMPT, request.history, request.message)
         reply_text = self._run_loop(messages)
         return ChatResponse(reply=reply_text, session_id=request.session_id)
+
+    # ------------------------------------------------------------------
+    # Streaming entrypoint
+    # ------------------------------------------------------------------
+    def stream(self, request: ChatRequest):
+        """Run the agentic loop, yielding events for the UI as they happen.
+
+        This is a generator of (event_type, data) tuples:
+            ("status", str)  — human-readable progress (e.g. "Searching…")
+            ("token",  str)  — a chunk of the final answer's text
+            ("done",   str)  — the complete final answer (for convenience)
+            ("error",  str)  — a terminal error message
+
+        Tool-call rounds are not streamed token-by-token (they aren't
+        user-facing prose); instead we emit a "status" event per round and
+        stream only the model's final, tool-free answer.
+        """
+        try:
+            llm = self.llm
+        except RuntimeError as exc:
+            yield ("error", str(exc))
+            return
+
+        messages = self._build_messages(SYSTEM_PROMPT, request.history, request.message)
+
+        try:
+            yield from self._stream_loop(llm, messages)
+        except AgentError as exc:
+            yield ("error", str(exc))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Streaming loop failed")
+            yield ("error", f"Something went wrong: {exc}")
+
+    def _stream_loop(self, llm, messages: list[dict]):
+        """Tool loop that streams the final answer's tokens."""
+        for iteration in range(settings.AGENT_MAX_ITERATIONS):
+            # Non-streaming call to decide whether tools are needed this round.
+            try:
+                response = llm.chat.completions.create(
+                    model=settings.LLM_MODEL,
+                    messages=messages,
+                    tools=tools.TOOL_SPECS,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("LLM request failed during streaming")
+                raise AgentError(f"LLM request failed: {exc}") from exc
+
+            message = response.choices[0].message
+            tool_calls = getattr(message, "tool_calls", None)
+
+            if not tool_calls:
+                # Final answer reached. Stream it token-by-token for a snappy UX.
+                final = (message.content or "").strip()
+                if final:
+                    yield from self._stream_text(final)
+                    yield ("done", final)
+                    return
+                # Empty content with no tools — fall through to a streamed call.
+                break
+
+            # Announce the tool round, then execute the tools.
+            names = ", ".join(c.function.name for c in tool_calls)
+            yield ("status", _status_for_tools(names))
+
+            messages.append(self._assistant_tool_message(message, tool_calls))
+            for call in tool_calls:
+                result = self._dispatch_tool(call.function.name, call.function.arguments)
+                messages.append(
+                    {"role": "tool", "tool_call_id": call.id, "content": result}
+                )
+            yield ("status", "Reading the results…")
+
+        # Hit the iteration cap (or empty final) — stream one tool-free answer.
+        yield ("status", "Putting it together…")
+        text = self._force_final_answer(llm, messages)
+        yield from self._stream_text(text)
+        yield ("done", text)
+
+    @staticmethod
+    def _stream_text(text: str):
+        """Yield text in small word-grouped chunks as ('token', chunk).
+
+        The decision call above is not a streaming completion, so we already
+        have the full final text; chunking it here keeps the UI's typing
+        animation smooth without a second model round trip.
+        """
+        words = text.split(" ")
+        chunk = []
+        for i, word in enumerate(words):
+            chunk.append(word)
+            # Emit every few words to balance smoothness vs. event volume.
+            if len(chunk) >= 3 or i == len(words) - 1:
+                piece = " ".join(chunk)
+                if i != len(words) - 1:
+                    piece += " "
+                yield ("token", piece)
+                chunk = []
 
     # ------------------------------------------------------------------
     # Core loop (shared with recommendation service)
