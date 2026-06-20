@@ -132,9 +132,12 @@ TOOL_SPECS = [
             "name": "place_order",
             "description": (
                 "Place an order for everything currently in the shopper's cart "
-                "(simulated payment — no real charge). Before calling this, make "
-                "sure the cart has items (use view_cart) and confirm the shopper "
-                "wants to check out. Ask which payment method they'd like."
+                "(simulated payment — no real charge). Before calling this: make "
+                "sure the cart has items (use view_cart), confirm the shopper "
+                "wants to check out, ask which payment method they'd like, AND "
+                "collect their delivery details (see the `delivery` argument). "
+                "An order placed without delivery details cannot be tracked, so "
+                "always gather the address first."
             ),
             "parameters": {
                 "type": "object",
@@ -145,7 +148,48 @@ TOOL_SPECS = [
                         "description": "Payment method the shopper chose",
                         "default": "card",
                     },
+                    "delivery": {
+                        "type": "object",
+                        "description": (
+                            "Delivery contact + shipping address, collected from "
+                            "the shopper. Ask for any missing required fields "
+                            "before placing the order."
+                        ),
+                        "properties": {
+                            "full_name": {"type": "string", "description": "Recipient's full name"},
+                            "email": {"type": "string", "description": "Contact email"},
+                            "phone": {"type": "string", "description": "Contact phone (optional)"},
+                            "line1": {"type": "string", "description": "Address line 1 — house/flat, street"},
+                            "line2": {"type": "string", "description": "Address line 2 — area/landmark (optional)"},
+                            "city": {"type": "string", "description": "City"},
+                            "state": {"type": "string", "description": "State / province"},
+                            "postal_code": {"type": "string", "description": "Postal / PIN code"},
+                            "country": {"type": "string", "description": "ISO-2 country code (default IN)"},
+                            "notes": {"type": "string", "description": "Delivery instructions (optional)"},
+                        },
+                        "required": ["full_name", "email", "line1", "city", "state", "postal_code"],
+                    },
                 },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "open_order_tracking",
+            "description": (
+                "Open the live delivery tracking page for one of the shopper's "
+                "orders inside the app. Call this ONLY when the shopper asks to "
+                "track an order / see where it is / view tracking, OR after you "
+                "offer to show tracking and they confirm. Use the order's id "
+                "(from a just-placed order or from list_orders)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "order_id": {"type": "string", "description": "The order id to open tracking for"},
+                },
+                "required": ["order_id"],
             },
         },
     },
@@ -208,6 +252,15 @@ def _place_order(access_token, **kwargs):
     return backend_client.place_order(access_token, **kwargs)
 
 
+def _open_order_tracking(**kwargs):
+    """Signal the UI to open the tracking page. No backend call — the agent
+    loop turns this into a navigation 'action' event for the client."""
+    order_id = str(kwargs.get("order_id") or "").strip()
+    if not order_id:
+        return {"error": "open_order_tracking needs the order_id."}
+    return {"ok": True, "order_id": order_id, "message": "Opening the tracking page."}
+
+
 def _list_orders(access_token, **kwargs):
     return backend_client.list_orders(access_token, **kwargs)
 
@@ -221,6 +274,7 @@ TOOL_IMPLS = {
     "remove_from_cart": _remove_from_cart,
     "clear_cart": _clear_cart,
     "place_order": _place_order,
+    "open_order_tracking": _open_order_tracking,
     "list_orders": _list_orders,
 }
 

@@ -52,10 +52,19 @@ SYSTEM_PROMPT = (
     "title, and confirm you have the right book.\n"
     "- To remove an item, call view_cart to get the cart-item id, then "
     "remove_from_cart with that id.\n"
-    "- Before placing an order, confirm the shopper wants to check out and ask "
-    "which payment method they'd like (card, paypal, or bank_transfer). Only "
-    "then call place_order. Payment is simulated — no real charge — so tell the "
-    "shopper that. After ordering, share the order id, total, and status.\n"
+    "- Before placing an order: confirm the shopper wants to check out, ask "
+    "which payment method they'd like (card, paypal, or bank_transfer), AND "
+    "collect their delivery details — full name, email, phone, and full "
+    "shipping address (address line, city, state, postal code, country). Ask "
+    "for any missing fields in a short, structured way (you can list what you "
+    "still need). Then call place_order with both payment_method and the "
+    "delivery object. An order without delivery details can't be tracked. "
+    "Payment is simulated — no real charge — so tell the shopper that. After "
+    "ordering, share the order id, total, and status.\n"
+    "- Tracking: if the shopper asks to track an order, see where it is, or "
+    "view its delivery, call open_order_tracking with the order id to open the "
+    "live tracking page. After placing an order you may offer to show tracking; "
+    "if they say yes, call open_order_tracking with that order's id.\n"
     "- Never invent cart contents, prices, order ids, or totals: always read "
     "them from the tools."
 )
@@ -115,6 +124,8 @@ def _status_for_tools(names: str) -> str:
     """Map tool names to a friendly progress message for streaming clients."""
     if "place_order" in names:
         return "Placing your order…"
+    if "open_order_tracking" in names:
+        return "Opening tracking…"
     if "add_to_cart" in names:
         return "Adding to your cart…"
     if "remove_from_cart" in names or "clear_cart" in names:
@@ -264,12 +275,21 @@ class AgentService:
                 }
             )
             for call in calls:
-                result = self._dispatch_tool(
-                    call["function"]["name"], call["function"]["arguments"]
-                )
+                fname = call["function"]["name"]
+                result = self._dispatch_tool(fname, call["function"]["arguments"])
                 messages.append(
                     {"role": "tool", "tool_call_id": call["id"], "content": result}
                 )
+                # Surface a navigation directive to the UI when the model opens
+                # tracking. The tool result still goes to the model so it can
+                # add a confirming sentence.
+                if fname == "open_order_tracking":
+                    try:
+                        oid = json.loads(call["function"]["arguments"] or "{}").get("order_id")
+                    except json.JSONDecodeError:
+                        oid = None
+                    if oid:
+                        yield ("action", {"target": "order_tracking", "order_id": str(oid)})
             yield ("status", "Reading the results…")
 
         # Hit the iteration cap — make a final, tool-free streaming answer.

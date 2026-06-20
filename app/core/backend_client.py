@@ -191,12 +191,13 @@ def clear_cart(access_token: str) -> dict:
         return _slim_cart(_unwrap(resp.json()))
 
 
-def place_order(access_token: str, payment_method: str = "card") -> dict:
+def place_order(access_token: str, payment_method: str = "card", delivery: dict | None = None) -> dict:
     """Check out the user's current cart into a confirmed order.
 
-    Reads the cart server-side, sends its items to the checkout endpoint
-    (which simulates payment, creates the order, deducts stock, and clears the
-    cart). Returns the order summary.
+    Reads the cart server-side, sends its items (and optional delivery details)
+    to the checkout endpoint (which simulates payment, creates the order,
+    snapshots the delivery address, deducts stock, and clears the cart).
+    Returns the order summary.
     """
     cart = get_cart(access_token)
     items = [
@@ -208,11 +209,18 @@ def place_order(access_token: str, payment_method: str = "card") -> dict:
         return {"error": "Your cart is empty — add a book before placing an order."}
 
     method = payment_method if payment_method in ("card", "paypal", "bank_transfer") else "card"
+    payload: dict = {"items": items, "payment_method": method}
+
+    # Snapshot the delivery address onto the order so it can be tracked. Only
+    # forward non-empty fields; the backend requires name/email/line1/city/
+    # state/postal_code and defaults country to IN.
+    if delivery:
+        clean = {k: v for k, v in delivery.items() if isinstance(v, str) and v.strip()}
+        if clean:
+            payload["delivery"] = clean
+
     with _auth_client(access_token) as client:
-        resp = client.post(
-            "/api/orders/checkout/",
-            json={"items": items, "payment_method": method},
-        )
+        resp = client.post("/api/orders/checkout/", json=payload)
         resp.raise_for_status()
         return _unwrap(resp.json())
 
